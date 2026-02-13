@@ -145,13 +145,22 @@
     width: 100%;
   }
 
-  /* PiP 隐藏的 video */
+  /* PiP 隐藏的 canvas 和 video */
+  #pipCanvas2 {
+    position: fixed;
+    top: -9999px;
+    left: -9999px;
+    width: 600px;
+    height: 160px;
+    pointer-events: none;
+  }
+
   #pipVideo {
     position: fixed;
     top: -9999px;
     left: -9999px;
-    width: 1px;
-    height: 1px;
+    width: 600px;
+    height: 160px;
   }
 
   /* 状态提示 */
@@ -199,8 +208,10 @@
   <div class="status-bar" id="statusBar">点击画面 暂停/继续 | 画中画后切到相机录制</div>
 </div>
 
+<!-- PiP 专用 canvas（在 DOM 内但不可见） -->
+<canvas id="pipCanvas2" width="600" height="160"></canvas>
 <!-- 用于 PiP 的隐藏视频元素 -->
-<video id="pipVideo" muted playsinline></video>
+<video id="pipVideo" muted playsinline width="600" height="160"></video>
 
 <script>
 (function() {
@@ -221,8 +232,8 @@
   const statusBar = document.getElementById('statusBar');
   const ctx = canvas.getContext('2d');
 
-  // PiP 专用小 canvas（窄条，只显示当前几行）
-  const pipCanvas = document.createElement('canvas');
+  // PiP 专用小 canvas（DOM 内，隐藏）
+  const pipCanvas = document.getElementById('pipCanvas2');
   const pipCtx = pipCanvas.getContext('2d');
 
   // === 状态 ===
@@ -243,8 +254,8 @@
   const PIP_LINE_HEIGHT = PIP_FONT_SIZE * 1.5;
   const PIP_VISIBLE_LINES = 3;
 
-  pipCanvas.width = PIP_WIDTH;
-  pipCanvas.height = PIP_HEIGHT;
+  // pipCanvas 尺寸已在 HTML 中设置
+  let pipStream = null;
 
   // === 控制面板事件 ===
   speedRange.addEventListener('input', () => {
@@ -490,11 +501,15 @@
   // === 提前准备视频流（使用 pipCanvas）===
   function preparePipStream() {
     try {
-      const stream = pipCanvas.captureStream(30);
-      pipVideo.srcObject = stream;
-      pipVideo.play().catch(() => {});
+      // captureStream(30): 以 30fps 自动捕获 canvas 画面
+      pipStream = pipCanvas.captureStream(30);
+      pipVideo.srcObject = pipStream;
+      pipVideo.play().catch((e) => {
+        console.error('pipVideo play error:', e);
+      });
     } catch (e) {
       console.error('preparePipStream error:', e);
+      statusBar.textContent = '流创建失败: ' + e.message;
     }
   }
 
@@ -505,7 +520,7 @@
       return;
     }
 
-    if (!pipVideo.srcObject) {
+    if (!pipVideo.srcObject || !pipStream) {
       preparePipStream();
     }
 
@@ -537,6 +552,7 @@
     isPiP = false;
     pipBtn.textContent = '画中画';
     pipVideo.srcObject = null;
+    pipStream = null;
   }
 
   // === Media Session API ===
