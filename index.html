@@ -17,7 +17,6 @@
     user-select: none;
   }
 
-  /* ===== 编辑界面 ===== */
   #editor {
     display: flex;
     flex-direction: column;
@@ -67,7 +66,7 @@
   .control-row label {
     font-size: 14px;
     color: #aaa;
-    width: 50px;
+    width: 70px;
     flex-shrink: 0;
   }
 
@@ -79,7 +78,7 @@
   .control-row .value {
     font-size: 14px;
     color: #ccc;
-    width: 40px;
+    width: 50px;
     text-align: right;
     flex-shrink: 0;
   }
@@ -98,7 +97,7 @@
 
   #startBtn:active { opacity: 0.7; }
 
-  /* ===== 提词界面 ===== */
+  /* 提词界面 */
   #prompter {
     display: none;
     position: fixed;
@@ -145,25 +144,18 @@
     width: 100%;
   }
 
-  /* PiP 隐藏的 canvas 和 video */
-  #pipCanvas2 {
-    position: fixed;
-    top: -9999px;
-    left: -9999px;
-    width: 600px;
-    height: 160px;
-    pointer-events: none;
-  }
-
+  /* 隐藏的视频用于 PiP */
   #pipVideo {
     position: fixed;
-    top: -9999px;
-    left: -9999px;
-    width: 600px;
-    height: 160px;
+    bottom: 0;
+    left: 0;
+    width: 320px;
+    height: 180px;
+    opacity: 0.01;
+    pointer-events: none;
+    z-index: -1;
   }
 
-  /* 状态提示 */
   .status-bar {
     padding: 6px 16px;
     text-align: center;
@@ -175,7 +167,6 @@
 </head>
 <body>
 
-<!-- 编辑界面 -->
 <div id="editor">
   <h1>口播提词器</h1>
 
@@ -192,12 +183,16 @@
       <input type="range" id="fontRange" min="20" max="60" step="2" value="36">
       <span class="value" id="fontValue">36</span>
     </div>
+    <div class="control-row">
+      <label>每屏行数</label>
+      <input type="range" id="linesRange" min="1" max="4" step="1" value="2">
+      <span class="value" id="linesValue">2</span>
+    </div>
   </div>
 
   <button id="startBtn">开始提词</button>
 </div>
 
-<!-- 提词界面 -->
 <div id="prompter">
   <div class="prompter-header">
     <button id="backBtn">← 返回</button>
@@ -208,21 +203,20 @@
   <div class="status-bar" id="statusBar">点击画面 暂停/继续 | 画中画后切到相机录制</div>
 </div>
 
-<!-- PiP 专用 canvas（在 DOM 内但不可见） -->
-<canvas id="pipCanvas2" width="600" height="160"></canvas>
-<!-- 用于 PiP 的隐藏视频元素 -->
-<video id="pipVideo" muted playsinline width="600" height="160"></video>
+<!-- 用于 PiP 的视频：1x1 黑色像素 MP4，循环播放 -->
+<video id="pipVideo" muted playsinline loop></video>
 
 <script>
 (function() {
-  // === 元素引用 ===
   const editor = document.getElementById('editor');
   const prompter = document.getElementById('prompter');
   const textInput = document.getElementById('textInput');
   const speedRange = document.getElementById('speedRange');
   const fontRange = document.getElementById('fontRange');
+  const linesRange = document.getElementById('linesRange');
   const speedValue = document.getElementById('speedValue');
   const fontValue = document.getElementById('fontValue');
+  const linesValue = document.getElementById('linesValue');
   const startBtn = document.getElementById('startBtn');
   const backBtn = document.getElementById('backBtn');
   const pipBtn = document.getElementById('pipBtn');
@@ -232,32 +226,22 @@
   const statusBar = document.getElementById('statusBar');
   const ctx = canvas.getContext('2d');
 
-  // PiP 专用小 canvas（DOM 内，隐藏）
-  const pipCanvas = document.getElementById('pipCanvas2');
-  const pipCtx = pipCanvas.getContext('2d');
-
-  // === 状态 ===
   let speed = 3;
   let fontSize = 36;
   let scrollY = 0;
   let totalHeight = 0;
   let isPaused = false;
-  let animId = null;
   let lines = [];
   let isPiP = false;
   let intervalId = null;
+  let pipLinesPerCue = 2;
+  let textTrack = null;
 
-  // PiP canvas 尺寸（宽屏窄条）
-  const PIP_WIDTH = 600;
-  const PIP_HEIGHT = 160;
-  const PIP_FONT_SIZE = 32;
-  const PIP_LINE_HEIGHT = PIP_FONT_SIZE * 1.5;
-  const PIP_VISIBLE_LINES = 3;
+  // 生成最小的黑色 MP4 视频（base64）
+  // 这是一个 1s 的黑色静音 MP4
+  const BLANK_VIDEO_BASE64 = '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';
 
-  // pipCanvas 尺寸已在 HTML 中设置
-  let pipStream = null;
-
-  // === 控制面板事件 ===
+  // 控制面板事件
   speedRange.addEventListener('input', () => {
     speed = parseFloat(speedRange.value);
     speedValue.textContent = speed;
@@ -269,12 +253,16 @@
     fontValue.textContent = fontSize;
   });
 
-  // === 开始提词 ===
+  linesRange.addEventListener('input', () => {
+    pipLinesPerCue = parseInt(linesRange.value);
+    linesValue.textContent = pipLinesPerCue;
+  });
+
+  // 开始提词
   startBtn.addEventListener('click', () => {
     const text = textInput.value.trim();
     if (!text) {
       textInput.focus();
-      textInput.setAttribute('placeholder', '请先输入口播稿！');
       startBtn.textContent = '请先输入文字！';
       startBtn.style.background = '#ff453a';
       setTimeout(() => {
@@ -288,7 +276,7 @@
 
   backBtn.addEventListener('click', exitPrompter);
 
-  // === 进入提词界面 ===
+  // 进入提词界面
   function enterPrompter(text) {
     editor.style.display = 'none';
     prompter.classList.add('active');
@@ -299,23 +287,21 @@
 
         const rect = canvas.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) {
-          canvas.width = window.innerWidth * (window.devicePixelRatio || 1);
-          canvas.height = (window.innerHeight - 80) * (window.devicePixelRatio || 1);
-          ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+          const dpr = window.devicePixelRatio || 1;
+          canvas.width = window.innerWidth * dpr;
+          canvas.height = (window.innerHeight - 80) * dpr;
+          ctx.scale(dpr, dpr);
         }
 
         wrapText(text);
-
         scrollY = 0;
         isPaused = false;
 
         requestWakeLock();
         startRendering();
 
-        // 先画一帧，再创建流，确保 PiP 有内容
-        drawFrame();
-        drawPipFrame();
-        preparePipStream();
+        // 准备 PiP 视频和字幕
+        preparePipVideo();
       });
     });
   }
@@ -328,7 +314,6 @@
     releaseWakeLock();
   }
 
-  // === Canvas 尺寸 ===
   function resizeCanvas() {
     const rect = canvas.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
@@ -339,7 +324,6 @@
     canvas.style.height = rect.height + 'px';
   }
 
-  // === 文本换行计算 ===
   function wrapText(text) {
     const maxWidth = (canvas.width / (window.devicePixelRatio || 1)) - 40;
     ctx.font = fontSize + 'px -apple-system, BlinkMacSystemFont, sans-serif';
@@ -355,8 +339,7 @@
       let currentLine = '';
       for (const char of para) {
         const testLine = currentLine + char;
-        const metrics = ctx.measureText(testLine);
-        if (metrics.width > maxWidth && currentLine.length > 0) {
+        if (ctx.measureText(testLine).width > maxWidth && currentLine.length > 0) {
           lines.push(currentLine);
           currentLine = char;
         } else {
@@ -370,13 +353,12 @@
     totalHeight = lines.length * lineHeight + canvas.height / (window.devicePixelRatio || 1);
   }
 
-  // === 计算当前行索引 ===
   function getCurrentLineIndex() {
     const lineHeight = fontSize * 1.8;
     return Math.floor(scrollY / lineHeight);
   }
 
-  // === 主屏渲染 ===
+  // 主屏渲染
   function drawFrame() {
     const w = canvas.width / (window.devicePixelRatio || 1);
     const h = canvas.height / (window.devicePixelRatio || 1);
@@ -417,67 +399,91 @@
         statusBar.textContent = '已滚动到末尾';
       }
     }
+
+    // 同步 PiP 视频的 currentTime 到当前进度
+    syncPipTime();
   }
 
-  // === PiP 小 canvas 渲染（窄条，只显示当前 2-3 行）===
-  function drawPipFrame() {
-    const w = PIP_WIDTH;
-    const h = PIP_HEIGHT;
+  // === PiP 方案：真实视频 + TextTrack 字幕 ===
 
-    pipCtx.clearRect(0, 0, w, h);
+  function preparePipVideo() {
+    // 加载一个最小的黑色视频
+    const blob = base64ToBlob(BLANK_VIDEO_BASE64, 'video/mp4');
+    const url = URL.createObjectURL(blob);
+    pipVideo.src = url;
+    pipVideo.load();
 
-    // 半透明深色背景
-    pipCtx.fillStyle = 'rgba(0, 0, 0, 0.85)';
-    pipCtx.fillRect(0, 0, w, h);
+    // 添加字幕轨道
+    buildTextTrack();
+  }
 
-    // 当前行高亮条
-    pipCtx.fillStyle = 'rgba(10, 132, 255, 0.15)';
-    pipCtx.fillRect(0, 10, w, PIP_LINE_HEIGHT);
+  function base64ToBlob(base64, type) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return new Blob([bytes], { type });
+  }
 
-    pipCtx.font = 'bold ' + PIP_FONT_SIZE + 'px -apple-system, BlinkMacSystemFont, sans-serif';
-    pipCtx.textBaseline = 'top';
-
-    const currentIdx = getCurrentLineIndex();
-
-    for (let i = 0; i < PIP_VISIBLE_LINES; i++) {
-      const lineIdx = currentIdx + i;
-      if (lineIdx >= lines.length) break;
-
-      const y = 14 + i * PIP_LINE_HEIGHT;
-
-      if (i === 0) {
-        // 当前行 - 亮白色
-        pipCtx.fillStyle = '#ffffff';
-      } else {
-        // 后续行 - 灰色
-        pipCtx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-      }
-
-      // 截断过长文字
-      let text = lines[lineIdx];
-      const maxTextWidth = w - 30;
-      while (pipCtx.measureText(text).width > maxTextWidth && text.length > 0) {
-        text = text.slice(0, -1);
-      }
-
-      pipCtx.fillText(text, 15, y);
+  function buildTextTrack() {
+    // 移除旧的 track
+    while (pipVideo.textTracks.length > 0 && pipVideo.firstChild) {
+      pipVideo.removeChild(pipVideo.firstChild);
     }
 
-    // 底部进度条
-    const progress = lines.length > 0 ? Math.min(1, currentIdx / Math.max(1, lines.length - 1)) : 0;
-    pipCtx.fillStyle = 'rgba(255, 255, 255, 0.15)';
-    pipCtx.fillRect(0, h - 4, w, 4);
-    pipCtx.fillStyle = '#0a84ff';
-    pipCtx.fillRect(0, h - 4, w * progress, 4);
+    // 创建新 track
+    textTrack = pipVideo.addTextTrack('captions', '提词', 'zh');
+    textTrack.mode = 'showing';
+
+    // 计算每个 cue 的时长
+    // speed * 0.5 px/frame, 30fps => speed * 15 px/sec
+    // lineHeight = fontSize * 1.8
+    // 每行时间 = lineHeight / (speed * 15) 秒
+    const lineHeight = fontSize * 1.8;
+    const secPerLine = lineHeight / (speed * 15);
+
+    // 每 pipLinesPerCue 行一个 cue
+    for (let i = 0; i < lines.length; i += pipLinesPerCue) {
+      const startTime = i * secPerLine;
+      const endTime = (i + pipLinesPerCue) * secPerLine;
+
+      let cueText = '';
+      for (let j = 0; j < pipLinesPerCue && (i + j) < lines.length; j++) {
+        if (j > 0) cueText += '\n';
+        cueText += lines[i + j] || ' ';
+      }
+
+      try {
+        const cue = new VTTCue(startTime, endTime, cueText);
+        cue.line = -1; // 底部显示
+        cue.size = 100;
+        textTrack.addCue(cue);
+      } catch (e) {
+        // VTTCue 不可用时忽略
+      }
+    }
+  }
+
+  function syncPipTime() {
+    if (!isPiP || !pipVideo || pipVideo.paused) return;
+
+    const lineHeight = fontSize * 1.8;
+    const secPerLine = lineHeight / (speed * 15);
+    const currentLine = getCurrentLineIndex();
+    const targetTime = currentLine * secPerLine;
+
+    // 只在差距较大时同步，避免频繁 seek
+    if (Math.abs(pipVideo.currentTime - targetTime) > secPerLine * 0.5) {
+      pipVideo.currentTime = targetTime;
+    }
   }
 
   function startRendering() {
     stopRendering();
-
     const fps = 30;
     intervalId = setInterval(() => {
       drawFrame();
-      drawPipFrame();
     }, 1000 / fps);
   }
 
@@ -486,76 +492,79 @@
       clearInterval(intervalId);
       intervalId = null;
     }
-    if (animId) {
-      cancelAnimationFrame(animId);
-      animId = null;
-    }
   }
 
-  // === 点击暂停/继续 ===
+  // 点击暂停/继续
   canvas.addEventListener('click', () => {
     isPaused = !isPaused;
     statusBar.textContent = isPaused ? '已暂停 - 点击继续' : '滚动中 - 点击暂停';
   });
 
-  // === 提前准备视频流（使用 pipCanvas）===
-  function preparePipStream() {
-    try {
-      // captureStream(30): 以 30fps 自动捕获 canvas 画面
-      pipStream = pipCanvas.captureStream(30);
-      pipVideo.srcObject = pipStream;
-      pipVideo.play().catch((e) => {
-        console.error('pipVideo play error:', e);
-      });
-    } catch (e) {
-      console.error('preparePipStream error:', e);
-      statusBar.textContent = '流创建失败: ' + e.message;
-    }
-  }
-
-  // === PiP 画中画 ===
+  // PiP
   pipBtn.addEventListener('click', () => {
     if (isPiP) {
       exitPiP();
       return;
     }
 
-    if (!pipVideo.srcObject || !pipStream) {
-      preparePipStream();
+    // 确保视频已加载
+    if (!pipVideo.src) {
+      preparePipVideo();
     }
 
-    if (pipVideo.requestPictureInPicture) {
-      pipVideo.requestPictureInPicture().then(() => {
+    // 同步播放视频（需要在用户手势中）
+    pipVideo.play().then(() => {
+      // play 成功后立即请求 PiP
+      if (pipVideo.requestPictureInPicture) {
+        pipVideo.requestPictureInPicture().then(() => {
+          isPiP = true;
+          pipBtn.textContent = '退出画中画';
+          statusBar.textContent = '画中画已启动 - 切到相机App录制';
+          setupMediaSession();
+        }).catch((e) => {
+          statusBar.textContent = 'PiP失败: ' + e.message;
+        });
+      } else if (pipVideo.webkitSetPresentationMode) {
+        // Safari fallback
+        pipVideo.webkitSetPresentationMode('picture-in-picture');
         isPiP = true;
         pipBtn.textContent = '退出画中画';
         statusBar.textContent = '画中画已启动 - 切到相机App录制';
         setupMediaSession();
-      }).catch((e) => {
-        console.error('PiP error:', e);
-        statusBar.textContent = '画中画启动失败: ' + e.message;
-      });
-    } else {
-      statusBar.textContent = '当前浏览器不支持画中画';
-    }
+      } else {
+        statusBar.textContent = '浏览器不支持画中画';
+      }
+    }).catch((e) => {
+      statusBar.textContent = '视频播放失败: ' + e.message;
+    });
   });
 
-  // 监听 PiP 退出
   pipVideo.addEventListener('leavepictureinpicture', () => {
     isPiP = false;
     pipBtn.textContent = '画中画';
   });
 
-  function exitPiP() {
-    if (document.pictureInPictureElement) {
-      document.exitPictureInPicture().catch(() => {});
+  // Safari webkit event
+  pipVideo.addEventListener('webkitpresentationmodechanged', () => {
+    if (pipVideo.webkitPresentationMode !== 'picture-in-picture') {
+      isPiP = false;
+      pipBtn.textContent = '画中画';
     }
+  });
+
+  function exitPiP() {
+    try {
+      if (document.pictureInPictureElement) {
+        document.exitPictureInPicture().catch(() => {});
+      } else if (pipVideo.webkitSetPresentationMode) {
+        pipVideo.webkitSetPresentationMode('inline');
+      }
+    } catch (e) {}
     isPiP = false;
     pipBtn.textContent = '画中画';
-    pipVideo.srcObject = null;
-    pipStream = null;
   }
 
-  // === Media Session API ===
+  // Media Session
   function setupMediaSession() {
     if (!('mediaSession' in navigator)) return;
 
@@ -589,7 +598,7 @@
     });
   }
 
-  // === 屏幕常亮 ===
+  // 屏幕常亮
   let wakeLock = null;
 
   async function requestWakeLock() {
@@ -607,7 +616,6 @@
     }
   }
 
-  // === 监听窗口变化 ===
   window.addEventListener('resize', () => {
     if (prompter.classList.contains('active')) {
       resizeCanvas();
@@ -616,7 +624,6 @@
     }
   });
 
-  // === 防止 iOS 橡皮筋滚动 ===
   document.addEventListener('touchmove', (e) => {
     if (prompter.classList.contains('active')) {
       e.preventDefault();
