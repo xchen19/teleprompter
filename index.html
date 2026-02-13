@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>口播提词器</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    background: #111;
+    color: #fff;
+    min-height: 100vh;
+    overflow: hidden;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  /* ===== 编辑界面 ===== */
+  #editor {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+    padding: 16px;
+    gap: 12px;
+  }
+
+  #editor h1 {
+    font-size: 20px;
+    font-weight: 600;
+    text-align: center;
+    flex-shrink: 0;
+  }
+
+  #textInput {
+    flex: 1;
+    background: #222;
+    border: 1px solid #444;
+    border-radius: 12px;
+    color: #fff;
+    font-size: 16px;
+    line-height: 1.6;
+    padding: 14px;
+    resize: none;
+    outline: none;
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  #textInput::placeholder { color: #666; }
+
+  .controls {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .control-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .control-row label {
+    font-size: 14px;
+    color: #aaa;
+    width: 50px;
+    flex-shrink: 0;
+  }
+
+  .control-row input[type="range"] {
+    flex: 1;
+    accent-color: #0a84ff;
+  }
+
+  .control-row .value {
+    font-size: 14px;
+    color: #ccc;
+    width: 40px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  #startBtn {
+    background: #0a84ff;
+    color: #fff;
+    border: none;
+    border-radius: 12px;
+    padding: 14px;
+    font-size: 17px;
+    font-weight: 600;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  #startBtn:active { opacity: 0.7; }
+
+  /* ===== 提词界面 ===== */
+  #prompter {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: #000;
+    flex-direction: column;
+  }
+
+  #prompter.active {
+    display: flex;
+  }
+
+  .prompter-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    background: rgba(0,0,0,0.8);
+    flex-shrink: 0;
+    z-index: 10;
+  }
+
+  .prompter-header button {
+    background: #333;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 14px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .prompter-header button:active { opacity: 0.7; }
+  .prompter-header button.primary { background: #0a84ff; }
+
+  .speed-display {
+    font-size: 13px;
+    color: #aaa;
+  }
+
+  #prompterCanvas {
+    flex: 1;
+    width: 100%;
+  }
+
+  /* PiP 隐藏的 video */
+  #pipVideo {
+    position: fixed;
+    top: -9999px;
+    left: -9999px;
+    width: 1px;
+    height: 1px;
+  }
+
+  /* 状态提示 */
+  .status-bar {
+    padding: 6px 16px;
+    text-align: center;
+    font-size: 12px;
+    color: #666;
+    flex-shrink: 0;
+  }
+</style>
+</head>
+<body>
+
+<!-- 编辑界面 -->
+<div id="editor">
+  <h1>口播提词器</h1>
+
+  <textarea id="textInput" placeholder="在这里粘贴或输入你的口播稿...&#10;&#10;支持多段文字，提词器会自动匀速滚动。"></textarea>
+
+  <div class="controls">
+    <div class="control-row">
+      <label>速度</label>
+      <input type="range" id="speedRange" min="1" max="10" step="0.5" value="3">
+      <span class="value" id="speedValue">3</span>
+    </div>
+    <div class="control-row">
+      <label>字号</label>
+      <input type="range" id="fontRange" min="20" max="60" step="2" value="36">
+      <span class="value" id="fontValue">36</span>
+    </div>
+  </div>
+
+  <button id="startBtn">开始提词</button>
+</div>
+
+<!-- 提词界面 -->
+<div id="prompter">
+  <div class="prompter-header">
+    <button id="backBtn">← 返回</button>
+    <span class="speed-display" id="speedDisplay">速度: 3</span>
+    <button id="pipBtn" class="primary">画中画</button>
+  </div>
+  <canvas id="prompterCanvas"></canvas>
+  <div class="status-bar" id="statusBar">点击画面 暂停/继续 | 画中画后切到相机录制</div>
+</div>
+
+<!-- 用于 PiP 的隐藏视频元素 -->
+<video id="pipVideo" muted playsinline></video>
+
+<script>
+(function() {
+  // === 元素引用 ===
+  const editor = document.getElementById('editor');
+  const prompter = document.getElementById('prompter');
+  const textInput = document.getElementById('textInput');
+  const speedRange = document.getElementById('speedRange');
+  const fontRange = document.getElementById('fontRange');
+  const speedValue = document.getElementById('speedValue');
+  const fontValue = document.getElementById('fontValue');
+  const startBtn = document.getElementById('startBtn');
+  const backBtn = document.getElementById('backBtn');
+  const pipBtn = document.getElementById('pipBtn');
+  const canvas = document.getElementById('prompterCanvas');
+  const pipVideo = document.getElementById('pipVideo');
+  const speedDisplay = document.getElementById('speedDisplay');
+  const statusBar = document.getElementById('statusBar');
+  const ctx = canvas.getContext('2d');
+
+  // === 状态 ===
+  let speed = 3;          // 滚动速度 (px/frame at 60fps)
+  let fontSize = 36;
+  let scrollY = 0;        // 当前滚动偏移
+  let totalHeight = 0;    // 文本总高度
+  let isPaused = false;
+  let animId = null;
+  let lines = [];         // 换行后的文本行
+  let isPiP = false;
+  let intervalId = null;  // 用于后台渲染的 setInterval
+
+  // === 控制面板事件 ===
+  speedRange.addEventListener('input', () => {
+    speed = parseFloat(speedRange.value);
+    speedValue.textContent = speed;
+    speedDisplay.textContent = '速度: ' + speed;
+  });
+
+  fontRange.addEventListener('input', () => {
+    fontSize = parseInt(fontRange.value);
+    fontValue.textContent = fontSize;
+  });
+
+  // === 开始提词 ===
+  startBtn.addEventListener('click', () => {
+    const text = textInput.value.trim();
+    if (!text) {
+      textInput.focus();
+      textInput.setAttribute('placeholder', '请先输入口播稿！');
+      startBtn.textContent = '请先输入文字！';
+      startBtn.style.background = '#ff453a';
+      setTimeout(() => {
+        startBtn.textContent = '开始提词';
+        startBtn.style.background = '#0a84ff';
+      }, 2000);
+      return;
+    }
+    enterPrompter(text);
+  });
+
+  backBtn.addEventListener('click', exitPrompter);
+
+  // === 进入提词界面 ===
+  function enterPrompter(text) {
+    editor.style.display = 'none';
+    prompter.classList.add('active');
+
+    // 等待布局完成后再初始化 canvas
+    // iOS Safari 从 display:none 切换后需要一帧来完成布局
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        // 设置 canvas 尺寸
+        resizeCanvas();
+
+        // 如果 canvas 尺寸异常，用 fallback
+        const rect = canvas.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) {
+          canvas.width = window.innerWidth * (window.devicePixelRatio || 1);
+          canvas.height = (window.innerHeight - 80) * (window.devicePixelRatio || 1);
+          ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+        }
+
+        // 解析文本为行
+        wrapText(text);
+
+        // 重置滚动
+        scrollY = 0;
+        isPaused = false;
+
+        // 保持屏幕常亮
+        requestWakeLock();
+
+        // 开始渲染
+        startRendering();
+      });
+    });
+  }
+
+  function exitPrompter() {
+    stopRendering();
+    exitPiP();
+    prompter.classList.remove('active');
+    editor.style.display = 'flex';
+    releaseWakeLock();
+  }
+
+  // === Canvas 尺寸 ===
+  function resizeCanvas() {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    ctx.scale(dpr, dpr);
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = rect.height + 'px';
+  }
+
+  // === 文本换行计算 ===
+  function wrapText(text) {
+    const maxWidth = (canvas.width / (window.devicePixelRatio || 1)) - 40; // 左右留 20px
+    ctx.font = fontSize + 'px -apple-system, BlinkMacSystemFont, sans-serif';
+
+    const paragraphs = text.split('\n');
+    lines = [];
+
+    for (const para of paragraphs) {
+      if (para.trim() === '') {
+        lines.push('');
+        continue;
+      }
+      // 逐字符换行
+      let currentLine = '';
+      for (const char of para) {
+        const testLine = currentLine + char;
+        const metrics = ctx.measureText(testLine);
+        if (metrics.width > maxWidth && currentLine.length > 0) {
+          lines.push(currentLine);
+          currentLine = char;
+        } else {
+          currentLine = testLine;
+        }
+      }
+      if (currentLine) lines.push(currentLine);
+    }
+
+    const lineHeight = fontSize * 1.8;
+    totalHeight = lines.length * lineHeight + canvas.height / (window.devicePixelRatio || 1);
+  }
+
+  // === 渲染 ===
+  function drawFrame() {
+    const w = canvas.width / (window.devicePixelRatio || 1);
+    const h = canvas.height / (window.devicePixelRatio || 1);
+    const lineHeight = fontSize * 1.8;
+
+    // 清空
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, w, h);
+
+    // 绘制指示线（当前阅读位置）
+    const guideLine = h * 0.3;
+    ctx.strokeStyle = 'rgba(10, 132, 255, 0.3)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, guideLine);
+    ctx.lineTo(w, guideLine);
+    ctx.stroke();
+
+    // 绘制文字
+    ctx.font = fontSize + 'px -apple-system, BlinkMacSystemFont, sans-serif';
+    ctx.fillStyle = '#fff';
+    ctx.textBaseline = 'top';
+
+    const startY = guideLine - scrollY;
+
+    for (let i = 0; i < lines.length; i++) {
+      const y = startY + i * lineHeight;
+      // 只绘制可见行
+      if (y + lineHeight < 0) continue;
+      if (y > h) break;
+
+      // 当前行附近高亮，远处变暗
+      const distFromGuide = Math.abs(y - guideLine);
+      const opacity = Math.max(0.3, 1 - distFromGuide / (h * 0.5));
+      ctx.fillStyle = `rgba(255, 255, 255, ${opacity})`;
+
+      ctx.fillText(lines[i], 20, y);
+    }
+
+    // 滚动
+    if (!isPaused) {
+      scrollY += speed * 0.5;
+      // 滚完了就暂停
+      if (scrollY > totalHeight - h) {
+        isPaused = true;
+        statusBar.textContent = '✓ 已滚动到末尾';
+      }
+    }
+  }
+
+  function startRendering() {
+    stopRendering();
+
+    // 使用 setInterval 而不是 requestAnimationFrame
+    // 因为 rAF 在 Safari 后台会暂停，而 setInterval 在 PiP 模式下有更好的兼容性
+    const fps = 30;
+    intervalId = setInterval(() => {
+      drawFrame();
+    }, 1000 / fps);
+  }
+
+  function stopRendering() {
+    if (intervalId) {
+      clearInterval(intervalId);
+      intervalId = null;
+    }
+    if (animId) {
+      cancelAnimationFrame(animId);
+      animId = null;
+    }
+  }
+
+  // === 点击暂停/继续 ===
+  canvas.addEventListener('click', () => {
+    isPaused = !isPaused;
+    statusBar.textContent = isPaused ? '已暂停 - 点击继续' : '滚动中 - 点击暂停';
+  });
+
+  // === PiP 画中画 ===
+  pipBtn.addEventListener('click', async () => {
+    if (isPiP) {
+      exitPiP();
+      return;
+    }
+    try {
+      // 从 canvas 获取视频流
+      const stream = canvas.captureStream(30);
+      pipVideo.srcObject = stream;
+
+      // 需要先 play
+      await pipVideo.play();
+
+      // 进入画中画
+      if (pipVideo.requestPictureInPicture) {
+        await pipVideo.requestPictureInPicture();
+        isPiP = true;
+        pipBtn.textContent = '退出画中画';
+        statusBar.textContent = '画中画已启动 - 切到相机App录制';
+
+        // 设置 Media Session 控制
+        setupMediaSession();
+      } else {
+        statusBar.textContent = '当前浏览器不支持画中画';
+      }
+    } catch (e) {
+      console.error('PiP error:', e);
+      statusBar.textContent = '画中画启动失败: ' + e.message;
+    }
+  });
+
+  // 监听 PiP 退出
+  pipVideo.addEventListener('leavepictureinpicture', () => {
+    isPiP = false;
+    pipBtn.textContent = '画中画';
+  });
+
+  function exitPiP() {
+    if (document.pictureInPictureElement) {
+      document.exitPictureInPicture().catch(() => {});
+    }
+    isPiP = false;
+    pipBtn.textContent = '画中画';
+    pipVideo.srcObject = null;
+  }
+
+  // === Media Session API（PiP 中的前进/后退按钮映射为加速/减速）===
+  function setupMediaSession() {
+    if (!('mediaSession' in navigator)) return;
+
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: '口播提词器',
+      artist: '滚动提词中...',
+    });
+
+    // 前进 → 加速
+    navigator.mediaSession.setActionHandler('seekforward', () => {
+      speed = Math.min(10, speed + 0.5);
+      speedRange.value = speed;
+      speedValue.textContent = speed;
+      speedDisplay.textContent = '速度: ' + speed;
+    });
+
+    // 后退 → 减速
+    navigator.mediaSession.setActionHandler('seekbackward', () => {
+      speed = Math.max(1, speed - 0.5);
+      speedRange.value = speed;
+      speedValue.textContent = speed;
+      speedDisplay.textContent = '速度: ' + speed;
+    });
+
+    // 播放/暂停
+    navigator.mediaSession.setActionHandler('play', () => {
+      isPaused = false;
+      statusBar.textContent = '滚动中';
+    });
+
+    navigator.mediaSession.setActionHandler('pause', () => {
+      isPaused = true;
+      statusBar.textContent = '已暂停';
+    });
+  }
+
+  // === 屏幕常亮 ===
+  let wakeLock = null;
+
+  async function requestWakeLock() {
+    if ('wakeLock' in navigator) {
+      try {
+        wakeLock = await navigator.wakeLock.request('screen');
+      } catch (e) {
+        // 静默失败
+      }
+    }
+  }
+
+  function releaseWakeLock() {
+    if (wakeLock) {
+      wakeLock.release().catch(() => {});
+      wakeLock = null;
+    }
+  }
+
+  // === 监听窗口变化 ===
+  window.addEventListener('resize', () => {
+    if (prompter.classList.contains('active')) {
+      resizeCanvas();
+      const text = textInput.value.trim();
+      if (text) wrapText(text);
+    }
+  });
+
+  // === 防止 iOS 橡皮筋滚动 ===
+  document.addEventListener('touchmove', (e) => {
+    if (prompter.classList.contains('active')) {
+      e.preventDefault();
+    }
+  }, { passive: false });
+
+  // === 预填演示文本 ===
+  textInput.value = '';
+
+})();
+</script>
+
+</body>
+</html>
