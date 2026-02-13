@@ -237,9 +237,9 @@
   let pipLinesPerCue = 2;
   let textTrack = null;
 
-  // 生成最小的黑色 MP4 视频（base64）
-  // 这是一个 1s 的黑色静音 MP4
-  const BLANK_VIDEO_BASE64 = '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';
+  // 有效的 2x2 黑色 H.264 MP4，1小时时长，1056字节
+  const BLANK_VIDEO_BASE64 = 'AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAJubW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAACWAAg9YAAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAfp0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAg9YAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAIAAAACAAAAAAGWbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAACWAAg9YBVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABQW1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAQFzdGJsAAAAhXN0c2QAAAAAAAAAAQAAAHVhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAIAAgBIAAAASAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGP//AAAAH2F2Y0MBQsAK/+EACGdCwAr7sREIAQAEaM44gAAAABhzdHRzAAAAAAAAAAEAAAABACD1gAAAABRzdHNzAAAAAAAAAAEAAAABAAAAHHN0c2MAAAAAAAAAAQAAAAEAAAABAAAAAQAAABhzdHN6AAAAAAAAAAAAAAABAAABigAAABRzdGNvAAAAAAAAAAEAAAKWAAABkm1kYXQAAAGGZYiECGgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA';
+  let videoReady = false;
 
   // 控制面板事件
   speedRange.addEventListener('input', () => {
@@ -300,7 +300,7 @@
         requestWakeLock();
         startRendering();
 
-        // 准备 PiP 视频和字幕
+        // 准备 PiP 视频和字幕，并提前播放
         preparePipVideo();
       });
     });
@@ -407,13 +407,22 @@
   // === PiP 方案：真实视频 + TextTrack 字幕 ===
 
   function preparePipVideo() {
-    // 加载一个最小的黑色视频
     const blob = base64ToBlob(BLANK_VIDEO_BASE64, 'video/mp4');
     const url = URL.createObjectURL(blob);
     pipVideo.src = url;
-    pipVideo.load();
 
-    // 添加字幕轨道
+    // 视频加载就绪后自动播放（muted + playsinline 允许自动播放）
+    pipVideo.addEventListener('canplay', function onCanPlay() {
+      pipVideo.removeEventListener('canplay', onCanPlay);
+      pipVideo.play().then(() => {
+        videoReady = true;
+        statusBar.textContent = '视频就绪 - 点击画中画按钮';
+      }).catch((e) => {
+        statusBar.textContent = '视频自动播放失败: ' + e.message;
+      });
+    });
+
+    pipVideo.load();
     buildTextTrack();
   }
 
@@ -500,43 +509,41 @@
     statusBar.textContent = isPaused ? '已暂停 - 点击继续' : '滚动中 - 点击暂停';
   });
 
-  // PiP
+  // PiP - 视频已在播放中，直接同步请求画中画
   pipBtn.addEventListener('click', () => {
     if (isPiP) {
       exitPiP();
       return;
     }
 
-    // 确保视频已加载
-    if (!pipVideo.src) {
-      preparePipVideo();
+    if (!videoReady) {
+      // 视频还没准备好，尝试播放
+      pipVideo.play().then(() => {
+        videoReady = true;
+      }).catch(() => {});
+      statusBar.textContent = '视频未就绪，请稍后再试';
+      return;
     }
 
-    // 同步播放视频（需要在用户手势中）
-    pipVideo.play().then(() => {
-      // play 成功后立即请求 PiP
-      if (pipVideo.requestPictureInPicture) {
-        pipVideo.requestPictureInPicture().then(() => {
-          isPiP = true;
-          pipBtn.textContent = '退出画中画';
-          statusBar.textContent = '画中画已启动 - 切到相机App录制';
-          setupMediaSession();
-        }).catch((e) => {
-          statusBar.textContent = 'PiP失败: ' + e.message;
-        });
-      } else if (pipVideo.webkitSetPresentationMode) {
-        // Safari fallback
-        pipVideo.webkitSetPresentationMode('picture-in-picture');
+    // 同步调用，保持用户手势链
+    if (pipVideo.requestPictureInPicture) {
+      pipVideo.requestPictureInPicture().then(() => {
         isPiP = true;
         pipBtn.textContent = '退出画中画';
         statusBar.textContent = '画中画已启动 - 切到相机App录制';
         setupMediaSession();
-      } else {
-        statusBar.textContent = '浏览器不支持画中画';
-      }
-    }).catch((e) => {
-      statusBar.textContent = '视频播放失败: ' + e.message;
-    });
+      }).catch((e) => {
+        statusBar.textContent = 'PiP失败: ' + e.message;
+      });
+    } else if (pipVideo.webkitSetPresentationMode) {
+      pipVideo.webkitSetPresentationMode('picture-in-picture');
+      isPiP = true;
+      pipBtn.textContent = '退出画中画';
+      statusBar.textContent = '画中画已启动 - 切到相机App录制';
+      setupMediaSession();
+    } else {
+      statusBar.textContent = '浏览器不支持画中画';
+    }
   });
 
   pipVideo.addEventListener('leavepictureinpicture', () => {
