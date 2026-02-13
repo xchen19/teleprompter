@@ -295,6 +295,9 @@
 
         // 开始渲染
         startRendering();
+
+        // 提前准备视频流，这样点击 PiP 按钮时可以同步调用 requestPictureInPicture
+        preparePipStream();
       });
     });
   }
@@ -430,35 +433,41 @@
     statusBar.textContent = isPaused ? '已暂停 - 点击继续' : '滚动中 - 点击暂停';
   });
 
+  // === 提前准备视频流 ===
+  function preparePipStream() {
+    try {
+      const stream = canvas.captureStream(30);
+      pipVideo.srcObject = stream;
+      pipVideo.play().catch(() => {});
+    } catch (e) {
+      console.error('preparePipStream error:', e);
+    }
+  }
+
   // === PiP 画中画 ===
-  pipBtn.addEventListener('click', async () => {
+  pipBtn.addEventListener('click', () => {
     if (isPiP) {
       exitPiP();
       return;
     }
-    try {
-      // 从 canvas 获取视频流
-      const stream = canvas.captureStream(30);
-      pipVideo.srcObject = stream;
 
-      // 需要先 play
-      await pipVideo.play();
+    if (!pipVideo.srcObject) {
+      preparePipStream();
+    }
 
-      // 进入画中画
-      if (pipVideo.requestPictureInPicture) {
-        await pipVideo.requestPictureInPicture();
+    // 同步调用，不能用 async/await，否则 Safari 不认用户手势
+    if (pipVideo.requestPictureInPicture) {
+      pipVideo.requestPictureInPicture().then(() => {
         isPiP = true;
         pipBtn.textContent = '退出画中画';
         statusBar.textContent = '画中画已启动 - 切到相机App录制';
-
-        // 设置 Media Session 控制
         setupMediaSession();
-      } else {
-        statusBar.textContent = '当前浏览器不支持画中画';
-      }
-    } catch (e) {
-      console.error('PiP error:', e);
-      statusBar.textContent = '画中画启动失败: ' + e.message;
+      }).catch((e) => {
+        console.error('PiP error:', e);
+        statusBar.textContent = '画中画启动失败: ' + e.message;
+      });
+    } else {
+      statusBar.textContent = '当前浏览器不支持画中画';
     }
   });
 
