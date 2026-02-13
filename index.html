@@ -221,16 +221,30 @@
   const statusBar = document.getElementById('statusBar');
   const ctx = canvas.getContext('2d');
 
+  // PiP 专用小 canvas（窄条，只显示当前几行）
+  const pipCanvas = document.createElement('canvas');
+  const pipCtx = pipCanvas.getContext('2d');
+
   // === 状态 ===
-  let speed = 3;          // 滚动速度 (px/frame at 60fps)
+  let speed = 3;
   let fontSize = 36;
-  let scrollY = 0;        // 当前滚动偏移
-  let totalHeight = 0;    // 文本总高度
+  let scrollY = 0;
+  let totalHeight = 0;
   let isPaused = false;
   let animId = null;
-  let lines = [];         // 换行后的文本行
+  let lines = [];
   let isPiP = false;
-  let intervalId = null;  // 用于后台渲染的 setInterval
+  let intervalId = null;
+
+  // PiP canvas 尺寸（宽屏窄条）
+  const PIP_WIDTH = 600;
+  const PIP_HEIGHT = 160;
+  const PIP_FONT_SIZE = 32;
+  const PIP_LINE_HEIGHT = PIP_FONT_SIZE * 1.5;
+  const PIP_VISIBLE_LINES = 3;
+
+  pipCanvas.width = PIP_WIDTH;
+  pipCanvas.height = PIP_HEIGHT;
 
   // === 控制面板事件 ===
   speedRange.addEventListener('input', () => {
@@ -268,14 +282,10 @@
     editor.style.display = 'none';
     prompter.classList.add('active');
 
-    // 等待布局完成后再初始化 canvas
-    // iOS Safari 从 display:none 切换后需要一帧来完成布局
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        // 设置 canvas 尺寸
         resizeCanvas();
 
-        // 如果 canvas 尺寸异常，用 fallback
         const rect = canvas.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) {
           canvas.width = window.innerWidth * (window.devicePixelRatio || 1);
@@ -283,20 +293,17 @@
           ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
         }
 
-        // 解析文本为行
         wrapText(text);
 
-        // 重置滚动
         scrollY = 0;
         isPaused = false;
 
-        // 保持屏幕常亮
         requestWakeLock();
-
-        // 开始渲染
         startRendering();
 
-        // 提前准备视频流，这样点击 PiP 按钮时可以同步调用 requestPictureInPicture
+        // 先画一帧，再创建流，确保 PiP 有内容
+        drawFrame();
+        drawPipFrame();
         preparePipStream();
       });
     });
@@ -323,7 +330,7 @@
 
   // === 文本换行计算 ===
   function wrapText(text) {
-    const maxWidth = (canvas.width / (window.devicePixelRatio || 1)) - 40; // 左右留 20px
+    const maxWidth = (canvas.width / (window.devicePixelRatio || 1)) - 40;
     ctx.font = fontSize + 'px -apple-system, BlinkMacSystemFont, sans-serif';
 
     const paragraphs = text.split('\n');
@@ -334,7 +341,6 @@
         lines.push('');
         continue;
       }
-      // 逐字符换行
       let currentLine = '';
       for (const char of para) {
         const testLine = currentLine + char;
@@ -353,18 +359,22 @@
     totalHeight = lines.length * lineHeight + canvas.height / (window.devicePixelRatio || 1);
   }
 
-  // === 渲染 ===
+  // === 计算当前行索引 ===
+  function getCurrentLineIndex() {
+    const lineHeight = fontSize * 1.8;
+    return Math.floor(scrollY / lineHeight);
+  }
+
+  // === 主屏渲染 ===
   function drawFrame() {
     const w = canvas.width / (window.devicePixelRatio || 1);
     const h = canvas.height / (window.devicePixelRatio || 1);
     const lineHeight = fontSize * 1.8;
 
-    // 清空
     ctx.clearRect(0, 0, w, h);
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, w, h);
 
-    // 绘制指示线（当前阅读位置）
     const guideLine = h * 0.3;
     ctx.strokeStyle = 'rgba(10, 132, 255, 0.3)';
     ctx.lineWidth = 1;
@@ -373,46 +383,90 @@
     ctx.lineTo(w, guideLine);
     ctx.stroke();
 
-    // 绘制文字
     ctx.font = fontSize + 'px -apple-system, BlinkMacSystemFont, sans-serif';
-    ctx.fillStyle = '#fff';
     ctx.textBaseline = 'top';
 
     const startY = guideLine - scrollY;
 
     for (let i = 0; i < lines.length; i++) {
       const y = startY + i * lineHeight;
-      // 只绘制可见行
       if (y + lineHeight < 0) continue;
       if (y > h) break;
 
-      // 当前行附近高亮，远处变暗
       const distFromGuide = Math.abs(y - guideLine);
       const opacity = Math.max(0.3, 1 - distFromGuide / (h * 0.5));
       ctx.fillStyle = `rgba(255, 255, 255, ${opacity})`;
-
       ctx.fillText(lines[i], 20, y);
     }
 
-    // 滚动
     if (!isPaused) {
       scrollY += speed * 0.5;
-      // 滚完了就暂停
       if (scrollY > totalHeight - h) {
         isPaused = true;
-        statusBar.textContent = '✓ 已滚动到末尾';
+        statusBar.textContent = '已滚动到末尾';
       }
     }
+  }
+
+  // === PiP 小 canvas 渲染（窄条，只显示当前 2-3 行）===
+  function drawPipFrame() {
+    const w = PIP_WIDTH;
+    const h = PIP_HEIGHT;
+
+    pipCtx.clearRect(0, 0, w, h);
+
+    // 半透明深色背景
+    pipCtx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+    pipCtx.fillRect(0, 0, w, h);
+
+    // 当前行高亮条
+    pipCtx.fillStyle = 'rgba(10, 132, 255, 0.15)';
+    pipCtx.fillRect(0, 10, w, PIP_LINE_HEIGHT);
+
+    pipCtx.font = 'bold ' + PIP_FONT_SIZE + 'px -apple-system, BlinkMacSystemFont, sans-serif';
+    pipCtx.textBaseline = 'top';
+
+    const currentIdx = getCurrentLineIndex();
+
+    for (let i = 0; i < PIP_VISIBLE_LINES; i++) {
+      const lineIdx = currentIdx + i;
+      if (lineIdx >= lines.length) break;
+
+      const y = 14 + i * PIP_LINE_HEIGHT;
+
+      if (i === 0) {
+        // 当前行 - 亮白色
+        pipCtx.fillStyle = '#ffffff';
+      } else {
+        // 后续行 - 灰色
+        pipCtx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+      }
+
+      // 截断过长文字
+      let text = lines[lineIdx];
+      const maxTextWidth = w - 30;
+      while (pipCtx.measureText(text).width > maxTextWidth && text.length > 0) {
+        text = text.slice(0, -1);
+      }
+
+      pipCtx.fillText(text, 15, y);
+    }
+
+    // 底部进度条
+    const progress = lines.length > 0 ? Math.min(1, currentIdx / Math.max(1, lines.length - 1)) : 0;
+    pipCtx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+    pipCtx.fillRect(0, h - 4, w, 4);
+    pipCtx.fillStyle = '#0a84ff';
+    pipCtx.fillRect(0, h - 4, w * progress, 4);
   }
 
   function startRendering() {
     stopRendering();
 
-    // 使用 setInterval 而不是 requestAnimationFrame
-    // 因为 rAF 在 Safari 后台会暂停，而 setInterval 在 PiP 模式下有更好的兼容性
     const fps = 30;
     intervalId = setInterval(() => {
       drawFrame();
+      drawPipFrame();
     }, 1000 / fps);
   }
 
@@ -433,10 +487,10 @@
     statusBar.textContent = isPaused ? '已暂停 - 点击继续' : '滚动中 - 点击暂停';
   });
 
-  // === 提前准备视频流 ===
+  // === 提前准备视频流（使用 pipCanvas）===
   function preparePipStream() {
     try {
-      const stream = canvas.captureStream(30);
+      const stream = pipCanvas.captureStream(30);
       pipVideo.srcObject = stream;
       pipVideo.play().catch(() => {});
     } catch (e) {
@@ -455,7 +509,6 @@
       preparePipStream();
     }
 
-    // 同步调用，不能用 async/await，否则 Safari 不认用户手势
     if (pipVideo.requestPictureInPicture) {
       pipVideo.requestPictureInPicture().then(() => {
         isPiP = true;
@@ -486,7 +539,7 @@
     pipVideo.srcObject = null;
   }
 
-  // === Media Session API（PiP 中的前进/后退按钮映射为加速/减速）===
+  // === Media Session API ===
   function setupMediaSession() {
     if (!('mediaSession' in navigator)) return;
 
@@ -495,7 +548,6 @@
       artist: '滚动提词中...',
     });
 
-    // 前进 → 加速
     navigator.mediaSession.setActionHandler('seekforward', () => {
       speed = Math.min(10, speed + 0.5);
       speedRange.value = speed;
@@ -503,7 +555,6 @@
       speedDisplay.textContent = '速度: ' + speed;
     });
 
-    // 后退 → 减速
     navigator.mediaSession.setActionHandler('seekbackward', () => {
       speed = Math.max(1, speed - 0.5);
       speedRange.value = speed;
@@ -511,7 +562,6 @@
       speedDisplay.textContent = '速度: ' + speed;
     });
 
-    // 播放/暂停
     navigator.mediaSession.setActionHandler('play', () => {
       isPaused = false;
       statusBar.textContent = '滚动中';
@@ -530,9 +580,7 @@
     if ('wakeLock' in navigator) {
       try {
         wakeLock = await navigator.wakeLock.request('screen');
-      } catch (e) {
-        // 静默失败
-      }
+      } catch (e) {}
     }
   }
 
@@ -559,7 +607,6 @@
     }
   }, { passive: false });
 
-  // === 预填演示文本 ===
   textInput.value = '';
 
 })();
