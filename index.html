@@ -281,6 +281,97 @@
   #flipBtn {
     font-size: 18px !important;
   }
+
+  /* 语音跟随开关 */
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 2px 0;
+  }
+
+  .toggle-row label {
+    font-size: 14px;
+    color: #aaa;
+  }
+
+  .toggle-switch {
+    position: relative;
+    width: 48px;
+    height: 28px;
+    background: #444;
+    border-radius: 14px;
+    cursor: pointer;
+    transition: background 0.2s;
+    -webkit-tap-highlight-color: transparent;
+    flex-shrink: 0;
+  }
+
+  .toggle-switch.on {
+    background: #30d158;
+  }
+
+  .toggle-switch::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 24px;
+    height: 24px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 0.2s;
+  }
+
+  .toggle-switch.on::after {
+    transform: translateX(20px);
+  }
+
+  #sensitivityRow {
+    display: none;
+  }
+
+  #sensitivityRow.visible {
+    display: flex;
+  }
+
+  /* 音量指示器 */
+  #volumeIndicator {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 4px;
+    height: 60%;
+    background: rgba(50,50,50,0.5);
+    border-radius: 2px;
+    z-index: 10;
+    pointer-events: none;
+    display: none;
+  }
+
+  #volumeIndicator.visible {
+    display: block;
+  }
+
+  #volumeBar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #30d158;
+    border-radius: 2px;
+    transition: height 0.05s;
+  }
+
+  #volumeThreshold {
+    position: absolute;
+    left: -3px;
+    right: -3px;
+    height: 2px;
+    background: #ff453a;
+    border-radius: 1px;
+  }
 </style>
 </head>
 <body>
@@ -301,6 +392,15 @@
       <input type="range" id="fontRange" min="20" max="60" step="2" value="32">
       <span class="value" id="fontValue">32</span>
     </div>
+    <div class="toggle-row">
+      <label>语音跟随（说话时滚动，停顿时暂停）</label>
+      <div class="toggle-switch" id="voiceToggle"></div>
+    </div>
+    <div class="control-row" id="sensitivityRow">
+      <label>灵敏度</label>
+      <input type="range" id="sensitivityRange" min="1" max="10" step="1" value="5">
+      <span class="value" id="sensitivityValue">5</span>
+    </div>
   </div>
 
   <button id="startBtn">开始提词</button>
@@ -313,6 +413,10 @@
     <div id="scrollContent"></div>
   </div>
   <div id="guideLine"></div>
+  <div id="volumeIndicator">
+    <div id="volumeBar"></div>
+    <div id="volumeThreshold"></div>
+  </div>
   <div id="touchZone"></div>
 
   <div class="prompter-header">
@@ -352,6 +456,13 @@
   const touchZone = document.getElementById('touchZone');
   const speedDisplay = document.getElementById('speedDisplay');
   const statusBar = document.getElementById('statusBar');
+  const voiceToggle = document.getElementById('voiceToggle');
+  const sensitivityRow = document.getElementById('sensitivityRow');
+  const sensitivityRange = document.getElementById('sensitivityRange');
+  const sensitivityValue = document.getElementById('sensitivityValue');
+  const volumeIndicator = document.getElementById('volumeIndicator');
+  const volumeBar = document.getElementById('volumeBar');
+  const volumeThresholdEl = document.getElementById('volumeThreshold');
 
   let speed = 3;
   let fontSize = 32;
@@ -376,6 +487,16 @@
   let touchStartY = 0;
   let scrollStartY = 0;
 
+  // 语音跟随相关
+  let voiceFollow = false;
+  let sensitivity = 5;
+  let audioContext = null;
+  let analyser = null;
+  let vadDataArray = null;
+  let isSpeaking = false;
+  let speedMultiplier = 0;
+  let lastSpeakTime = 0;
+
   // 控制面板事件
   speedRange.addEventListener('input', () => {
     speed = parseFloat(speedRange.value);
@@ -386,6 +507,18 @@
   fontRange.addEventListener('input', () => {
     fontSize = parseInt(fontRange.value);
     fontValue.textContent = fontSize;
+  });
+
+  // 语音跟随开关
+  voiceToggle.addEventListener('click', () => {
+    voiceFollow = !voiceFollow;
+    voiceToggle.classList.toggle('on', voiceFollow);
+    sensitivityRow.classList.toggle('visible', voiceFollow);
+  });
+
+  sensitivityRange.addEventListener('input', () => {
+    sensitivity = parseInt(sensitivityRange.value);
+    sensitivityValue.textContent = sensitivity;
   });
 
   // 开始提词
@@ -426,6 +559,14 @@
     // 启动摄像头
     await startCamera();
 
+    // 初始化语音跟随
+    if (voiceFollow) {
+      setupVAD();
+      volumeIndicator.classList.add('visible');
+      speedDisplay.textContent = '语音跟随';
+      statusBar.textContent = '语音跟随模式 | 说话时自动滚动';
+    }
+
     // 启动滚动动画
     lastTime = performance.now();
     startRendering();
@@ -434,6 +575,7 @@
   function exitPrompter() {
     stopRendering();
     stopRecording();
+    teardownVAD();
     stopCamera();
     prompter.classList.remove('active');
     editor.style.display = 'flex';
@@ -463,11 +605,57 @@
     }
   }
 
+  // 语音跟随 - 音量检测
+  function setupVAD() {
+    if (!cameraStream) return;
+    const audioTracks = cameraStream.getAudioTracks();
+    if (audioTracks.length === 0) return;
+
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioContext.createMediaStreamSource(cameraStream);
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.3;
+    source.connect(analyser);
+    vadDataArray = new Uint8Array(analyser.fftSize);
+    speedMultiplier = 0;
+    lastSpeakTime = 0;
+  }
+
+  function teardownVAD() {
+    if (audioContext) {
+      audioContext.close().catch(() => {});
+      audioContext = null;
+      analyser = null;
+      vadDataArray = null;
+    }
+    isSpeaking = false;
+    speedMultiplier = 0;
+    lastSpeakTime = 0;
+    volumeIndicator.classList.remove('visible');
+  }
+
+  function getVolume() {
+    if (!analyser || !vadDataArray) return 0;
+    analyser.getByteTimeDomainData(vadDataArray);
+    let sum = 0;
+    for (let i = 0; i < vadDataArray.length; i++) {
+      const v = (vadDataArray[i] - 128) / 128;
+      sum += v * v;
+    }
+    return Math.sqrt(sum / vadDataArray.length);
+  }
+
   // 切换前后摄像头
   flipBtn.addEventListener('click', async () => {
     facingMode = facingMode === 'user' ? 'environment' : 'user';
+    if (voiceFollow) teardownVAD();
     stopCamera();
     await startCamera();
+    if (voiceFollow) {
+      setupVAD();
+      volumeIndicator.classList.add('visible');
+    }
     // 如果正在录制，需要重新设置录制
     if (isRecording) {
       stopRecording();
@@ -532,8 +720,32 @@
     lastTime = now;
 
     if (!isPaused && !isTouching) {
-      // speed * 15 px/sec (与之前的 speed * 0.5 px/frame@30fps 一致)
-      scrollY += speed * 15 * dt;
+      if (voiceFollow && analyser) {
+        const volume = getVolume();
+        // 灵敏度 1-10 映射到阈值 0.15-0.01
+        const threshold = 0.15 - (sensitivity - 1) * (0.14 / 9);
+
+        if (volume > threshold) {
+          lastSpeakTime = now / 1000;
+        }
+        const timeSinceSpeak = now / 1000 - lastSpeakTime;
+        isSpeaking = lastSpeakTime > 0 && timeSinceSpeak < 0.4;
+
+        // 平滑速度过渡
+        const target = isSpeaking ? 1 : 0;
+        const rampSpeed = isSpeaking ? 10 : 5;
+        speedMultiplier += (target - speedMultiplier) * Math.min(1, rampSpeed * dt);
+        if (speedMultiplier < 0.01) speedMultiplier = 0;
+
+        scrollY += speed * 15 * dt * speedMultiplier;
+
+        // 更新音量指示器
+        volumeBar.style.height = Math.min(100, volume * 500) + '%';
+        volumeThresholdEl.style.bottom = Math.min(100, threshold * 500) + '%';
+      } else {
+        // speed * 15 px/sec (与之前的 speed * 0.5 px/frame@30fps 一致)
+        scrollY += speed * 15 * dt;
+      }
 
       if (scrollY > totalHeight) {
         isPaused = true;
