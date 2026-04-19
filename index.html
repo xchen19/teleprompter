@@ -497,10 +497,12 @@
   let speedMultiplier = 0;
   let lastSpeakTime = 0;
 
-  // 语音识别跟随
+  // 语音识别跟随（逐字匹配）
   let recognition = null;
-  let paragraphPositions = []; // [{startLine, text}]
-  let currentParaIndex = 0;
+  let scriptClean = '';       // 去标点的全文字符串
+  let charLineMap = [];       // charLineMap[i] = scriptClean[i] 对应的显示行号
+  let scriptPos = 0;          // 已确认匹配到的位置
+  let processedFinalCount = 0;
   let targetScrollY = 0;
   let useSpeechRec = false;
 
@@ -568,7 +570,8 @@
 
     // 初始化语音跟随
     if (voiceFollow) {
-      currentParaIndex = 0;
+      scriptPos = 0;
+      processedFinalCount = 0;
       targetScrollY = 0;
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (SpeechRecognition && setupSpeechRecognition()) {
@@ -664,7 +667,9 @@
     return Math.sqrt(sum / vadDataArray.length);
   }
 
-  // 语音识别 - Web Speech API
+  // 语音识别 - Web Speech API（逐字匹配）
+  const puncStripRe = /[\s,，。！？、；：""''（）《》【】…—\.\!\?\;\:\"\'\(\)\[\]\-]/g;
+
   function setupSpeechRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return false;
@@ -676,20 +681,39 @@
     recognition.maxAlternatives = 1;
 
     recognition.onresult = (event) => {
-      let interimTranscript = '';
-      let finalTranscript = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        if (event.results[i].isFinal) {
-          finalTranscript += event.results[i][0].transcript;
-        } else {
-          interimTranscript += event.results[i][0].transcript;
+      let interimText = '';
+
+      // 处理新的 final 结果，永久推进 scriptPos
+      for (let i = 0; i < event.results.length; i++) {
+        if (event.results[i].isFinal && i >= processedFinalCount) {
+          const text = event.results[i][0].transcript;
+          const clean = text.replace(puncStripRe, '');
+          for (const char of clean) {
+            advanceScriptChar(char);
+          }
+          processedFinalCount = i + 1;
+        } else if (!event.results[i].isFinal) {
+          interimText += event.results[i][0].transcript;
         }
       }
-      if (finalTranscript) matchSpeechToText(finalTranscript);
-      if (interimTranscript) {
-        matchSpeechToText(interimTranscript);
-        statusBar.textContent = '\uD83C\uDFA4 ' + interimTranscript.slice(-30);
+
+      // 用 interim 结果做预判（更跟手）
+      let displayPos = scriptPos;
+      if (interimText) {
+        const clean = interimText.replace(puncStripRe, '');
+        for (const char of clean) {
+          const searchEnd = Math.min(displayPos + 20, scriptClean.length);
+          for (let k = displayPos; k < searchEnd; k++) {
+            if (scriptClean[k] === char) {
+              displayPos = k + 1;
+              break;
+            }
+          }
+        }
+        statusBar.textContent = '\uD83C\uDFA4 ' + interimText.slice(-30);
       }
+
+      updateScrollFromPos(displayPos);
     };
 
     recognition.onerror = (event) => {
@@ -698,6 +722,8 @@
     };
 
     recognition.onend = () => {
+      // 重启时重置 final 计数（新 session 从 0 开始）
+      processedFinalCount = 0;
       if (voiceFollow && useSpeechRec && !isPaused && prompter.classList.contains('active')) {
         try { recognition.start(); } catch(e) {}
       }
@@ -711,65 +737,51 @@
     }
   }
 
+  function advanceScriptChar(char) {
+    // 在当前位置附近搜索匹配字符，容忍识别误差
+    const searchEnd = Math.min(scriptPos + 20, scriptClean.length);
+    for (let k = scriptPos; k < searchEnd; k++) {
+      if (scriptClean[k] === char) {
+        scriptPos = k + 1;
+        return;
+      }
+    }
+    // 没找到 = 识别错误，跳过
+  }
+
+  function updateScrollFromPos(pos) {
+    if (pos > 0 && pos <= charLineMap.length) {
+      const lineIdx = charLineMap[Math.min(pos - 1, charLineMap.length - 1)];
+      const lineHeight = fontSize * 1.8;
+      targetScrollY = lineIdx * lineHeight;
+    }
+  }
+
   function teardownSpeechRecognition() {
     if (recognition) {
       try { recognition.stop(); } catch(e) {}
       recognition = null;
     }
-    currentParaIndex = 0;
+    scriptPos = 0;
+    processedFinalCount = 0;
     targetScrollY = 0;
     useSpeechRec = false;
   }
 
-  function matchSpeechToText(transcript) {
-    // 去除标点和空格
-    const clean = transcript.replace(/[\s,，。！？、；：""''（）《》【】\.\!\?\;\:\"\'\(\)\[\]]/g, '');
-    if (clean.length < 2) return;
-
-    // 只用最近的文字做匹配，避免旧文字干扰
-    const recent = clean.slice(-20);
-
-    // 往后查找 1~3 个段落
-    const startIdx = currentParaIndex + 1;
-    const endIdx = Math.min(paragraphPositions.length, currentParaIndex + 4);
-
-    for (let i = startIdx; i < endIdx; i++) {
-      const paraText = paragraphPositions[i].text.replace(/[\s,，。！？、；：""''（）《》【】\.\!\?\;\:\"\'\(\)\[\]]/g, '');
-      if (paraText.length < 2) {
-        // 自动跳过极短/空段落
-        if (i === currentParaIndex + 1) advanceToParagraph(i);
-        continue;
-      }
-
-      // 检查 3 字符公共子串
-      const matchLen = Math.min(3, paraText.length);
-      for (let j = 0; j <= recent.length - matchLen; j++) {
-        const sub = recent.substring(j, j + matchLen);
-        if (paraText.includes(sub)) {
-          advanceToParagraph(i);
-          return;
-        }
-      }
-    }
-  }
-
-  function advanceToParagraph(index) {
-    if (index <= currentParaIndex) return;
-    currentParaIndex = index;
+  function updatePosFromScroll() {
+    // 手动拖动后，根据 scrollY 反算 scriptPos
     const lineHeight = fontSize * 1.8;
-    targetScrollY = paragraphPositions[index].startLine * lineHeight;
-    statusBar.textContent = '\u6BB5\u843D ' + (index + 1) + ' / ' + paragraphPositions.length;
-  }
-
-  function updateCurrentParaFromScroll() {
-    const lineHeight = fontSize * 1.8;
-    for (let i = paragraphPositions.length - 1; i >= 0; i--) {
-      if (scrollY >= paragraphPositions[i].startLine * lineHeight - lineHeight) {
-        currentParaIndex = i;
+    const currentLine = Math.floor(scrollY / lineHeight);
+    // 找到该行对应的第一个字符位置
+    for (let i = 0; i < charLineMap.length; i++) {
+      if (charLineMap[i] >= currentLine) {
+        scriptPos = i;
         targetScrollY = scrollY;
-        break;
+        return;
       }
     }
+    scriptPos = charLineMap.length;
+    targetScrollY = scrollY;
   }
 
   // 切换前后摄像头
@@ -808,7 +820,6 @@
         lines.push('');
         continue;
       }
-      const paraStartLine = lines.length;
       let currentLine = '';
       for (const char of para) {
         const testLine = currentLine + char;
@@ -820,8 +831,22 @@
         }
       }
       if (currentLine) lines.push(currentLine);
-      paragraphPositions.push({ startLine: paraStartLine, text: para });
     }
+
+    // 构建字符到行号的映射（用于语音识别逐字跟随）
+    scriptClean = '';
+    charLineMap = [];
+    const puncRe = /[\s,，。！？、；：""''（）《》【】…—\.\!\?\;\:\"\'\(\)\[\]\-\n]/;
+    for (let i = 0; i < lines.length; i++) {
+      for (const char of lines[i]) {
+        if (char !== '\u00A0' && !puncRe.test(char)) {
+          scriptClean += char;
+          charLineMap.push(i);
+        }
+      }
+    }
+    scriptPos = 0;
+    processedFinalCount = 0;
 
     // 创建 DOM 元素
     for (let i = 0; i < lines.length; i++) {
@@ -960,8 +985,8 @@
         pauseBtn.textContent = isPaused ? '继续' : '暂停';
         statusBar.textContent = isPaused ? '已暂停' : '滚动中';
       } else if (voiceFollow && useSpeechRec) {
-        // 手动拖动后，更新当前段落索引
-        updateCurrentParaFromScroll();
+        // 手动拖动后，更新当前匹配位置
+        updatePosFromScroll();
       }
     }
     isTouching = false;
