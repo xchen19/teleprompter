@@ -568,20 +568,24 @@
     // 启动摄像头
     await startCamera();
 
-    // 初始化语音跟随
+    // 初始化语音跟随（混合模式：VAD即时响应 + 语音识别校准位置）
     if (voiceFollow) {
       scriptPos = 0;
       processedFinalCount = 0;
       targetScrollY = 0;
+
+      // VAD 提供即时响应（说话就滚，停嘴就停）
+      setupVAD();
+      volumeIndicator.classList.add('visible');
+
+      // 语音识别在后台校准实际阅读位置
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (SpeechRecognition && setupSpeechRecognition()) {
         useSpeechRec = true;
-        speedDisplay.textContent = '语音识别跟随';
-        statusBar.textContent = '语音识别模式 | 说到下一段内容自动滚动';
+        speedDisplay.textContent = '语音跟随';
+        statusBar.textContent = '说话即滚动 | 语音识别自动校准位置';
       } else {
         useSpeechRec = false;
-        setupVAD();
-        volumeIndicator.classList.add('visible');
         speedDisplay.textContent = '语音跟随';
         statusBar.textContent = '语音跟随模式 | 说话时自动滚动';
       }
@@ -787,10 +791,10 @@
   // 切换前后摄像头
   flipBtn.addEventListener('click', async () => {
     facingMode = facingMode === 'user' ? 'environment' : 'user';
-    if (voiceFollow && !useSpeechRec) teardownVAD();
+    if (voiceFollow) teardownVAD();
     stopCamera();
     await startCamera();
-    if (voiceFollow && !useSpeechRec) {
+    if (voiceFollow) {
       setupVAD();
       volumeIndicator.classList.add('visible');
     }
@@ -805,7 +809,6 @@
   function buildLines(text) {
     scrollContent.innerHTML = '';
     lines = [];
-    paragraphPositions = [];
 
     // 用 canvas 做文字换行计算
     const measureCanvas = document.createElement('canvas');
@@ -874,14 +877,7 @@
     lastTime = now;
 
     if (!isPaused && !isTouching) {
-      if (voiceFollow && useSpeechRec) {
-        // 语音识别模式：平滑滚动到目标段落
-        if (targetScrollY > scrollY + 0.5) {
-          scrollY += (targetScrollY - scrollY) * Math.min(1, 8 * dt);
-        } else {
-          scrollY = targetScrollY;
-        }
-      } else if (voiceFollow && analyser) {
+      if (voiceFollow && analyser) {
         const volume = getVolume();
         // 灵敏度 1-10 映射到阈值 0.15-0.01
         const threshold = 0.15 - (sensitivity - 1) * (0.14 / 9);
@@ -898,7 +894,17 @@
         speedMultiplier += (target - speedMultiplier) * Math.min(1, rampSpeed * dt);
         if (speedMultiplier < 0.01) speedMultiplier = 0;
 
+        // VAD 驱动即时滚动
         scrollY += speed * 15 * dt * speedMultiplier;
+
+        // 语音识别校准：如果偏差超过半行，柔和拉回正确位置
+        if (useSpeechRec && targetScrollY > 0) {
+          const lineHeight = fontSize * 1.8;
+          const diff = targetScrollY - scrollY;
+          if (Math.abs(diff) > lineHeight * 0.5) {
+            scrollY += diff * Math.min(1, 3 * dt);
+          }
+        }
 
         // 更新音量指示器
         volumeBar.style.height = Math.min(100, volume * 500) + '%';
