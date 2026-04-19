@@ -497,6 +497,13 @@
   let speedMultiplier = 0;
   let lastSpeakTime = 0;
 
+  // 语音识别跟随
+  let recognition = null;
+  let paragraphPositions = []; // [{startLine, text}]
+  let currentParaIndex = 0;
+  let targetScrollY = 0;
+  let useSpeechRec = false;
+
   // 控制面板事件
   speedRange.addEventListener('input', () => {
     speed = parseFloat(speedRange.value);
@@ -561,10 +568,20 @@
 
     // 初始化语音跟随
     if (voiceFollow) {
-      setupVAD();
-      volumeIndicator.classList.add('visible');
-      speedDisplay.textContent = '语音跟随';
-      statusBar.textContent = '语音跟随模式 | 说话时自动滚动';
+      currentParaIndex = 0;
+      targetScrollY = 0;
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (SpeechRecognition && setupSpeechRecognition()) {
+        useSpeechRec = true;
+        speedDisplay.textContent = '语音识别跟随';
+        statusBar.textContent = '语音识别模式 | 说到下一段内容自动滚动';
+      } else {
+        useSpeechRec = false;
+        setupVAD();
+        volumeIndicator.classList.add('visible');
+        speedDisplay.textContent = '语音跟随';
+        statusBar.textContent = '语音跟随模式 | 说话时自动滚动';
+      }
     }
 
     // 启动滚动动画
@@ -575,6 +592,7 @@
   function exitPrompter() {
     stopRendering();
     stopRecording();
+    teardownSpeechRecognition();
     teardownVAD();
     stopCamera();
     prompter.classList.remove('active');
@@ -646,13 +664,121 @@
     return Math.sqrt(sum / vadDataArray.length);
   }
 
+  // 语音识别 - Web Speech API
+  function setupSpeechRecognition() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return false;
+
+    recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'zh-CN';
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = (event) => {
+      let interimTranscript = '';
+      let finalTranscript = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript;
+        } else {
+          interimTranscript += event.results[i][0].transcript;
+        }
+      }
+      if (finalTranscript) matchSpeechToText(finalTranscript);
+      if (interimTranscript) {
+        matchSpeechToText(interimTranscript);
+        statusBar.textContent = '\uD83C\uDFA4 ' + interimTranscript.slice(-30);
+      }
+    };
+
+    recognition.onerror = (event) => {
+      if (event.error === 'no-speech' || event.error === 'aborted') return;
+      statusBar.textContent = '\u8BED\u97F3\u8BC6\u522B\u9519\u8BEF: ' + event.error;
+    };
+
+    recognition.onend = () => {
+      if (voiceFollow && useSpeechRec && !isPaused && prompter.classList.contains('active')) {
+        try { recognition.start(); } catch(e) {}
+      }
+    };
+
+    try {
+      recognition.start();
+      return true;
+    } catch(e) {
+      return false;
+    }
+  }
+
+  function teardownSpeechRecognition() {
+    if (recognition) {
+      try { recognition.stop(); } catch(e) {}
+      recognition = null;
+    }
+    currentParaIndex = 0;
+    targetScrollY = 0;
+    useSpeechRec = false;
+  }
+
+  function matchSpeechToText(transcript) {
+    // 去除标点和空格
+    const clean = transcript.replace(/[\s,，。！？、；：""''（）《》【】\.\!\?\;\:\"\'\(\)\[\]]/g, '');
+    if (clean.length < 2) return;
+
+    // 只用最近的文字做匹配，避免旧文字干扰
+    const recent = clean.slice(-20);
+
+    // 往后查找 1~3 个段落
+    const startIdx = currentParaIndex + 1;
+    const endIdx = Math.min(paragraphPositions.length, currentParaIndex + 4);
+
+    for (let i = startIdx; i < endIdx; i++) {
+      const paraText = paragraphPositions[i].text.replace(/[\s,，。！？、；：""''（）《》【】\.\!\?\;\:\"\'\(\)\[\]]/g, '');
+      if (paraText.length < 2) {
+        // 自动跳过极短/空段落
+        if (i === currentParaIndex + 1) advanceToParagraph(i);
+        continue;
+      }
+
+      // 检查 3 字符公共子串
+      const matchLen = Math.min(3, paraText.length);
+      for (let j = 0; j <= recent.length - matchLen; j++) {
+        const sub = recent.substring(j, j + matchLen);
+        if (paraText.includes(sub)) {
+          advanceToParagraph(i);
+          return;
+        }
+      }
+    }
+  }
+
+  function advanceToParagraph(index) {
+    if (index <= currentParaIndex) return;
+    currentParaIndex = index;
+    const lineHeight = fontSize * 1.8;
+    targetScrollY = paragraphPositions[index].startLine * lineHeight;
+    statusBar.textContent = '\u6BB5\u843D ' + (index + 1) + ' / ' + paragraphPositions.length;
+  }
+
+  function updateCurrentParaFromScroll() {
+    const lineHeight = fontSize * 1.8;
+    for (let i = paragraphPositions.length - 1; i >= 0; i--) {
+      if (scrollY >= paragraphPositions[i].startLine * lineHeight - lineHeight) {
+        currentParaIndex = i;
+        targetScrollY = scrollY;
+        break;
+      }
+    }
+  }
+
   // 切换前后摄像头
   flipBtn.addEventListener('click', async () => {
     facingMode = facingMode === 'user' ? 'environment' : 'user';
-    if (voiceFollow) teardownVAD();
+    if (voiceFollow && !useSpeechRec) teardownVAD();
     stopCamera();
     await startCamera();
-    if (voiceFollow) {
+    if (voiceFollow && !useSpeechRec) {
       setupVAD();
       volumeIndicator.classList.add('visible');
     }
@@ -667,6 +793,7 @@
   function buildLines(text) {
     scrollContent.innerHTML = '';
     lines = [];
+    paragraphPositions = [];
 
     // 用 canvas 做文字换行计算
     const measureCanvas = document.createElement('canvas');
@@ -681,6 +808,7 @@
         lines.push('');
         continue;
       }
+      const paraStartLine = lines.length;
       let currentLine = '';
       for (const char of para) {
         const testLine = currentLine + char;
@@ -692,6 +820,7 @@
         }
       }
       if (currentLine) lines.push(currentLine);
+      paragraphPositions.push({ startLine: paraStartLine, text: para });
     }
 
     // 创建 DOM 元素
@@ -720,7 +849,14 @@
     lastTime = now;
 
     if (!isPaused && !isTouching) {
-      if (voiceFollow && analyser) {
+      if (voiceFollow && useSpeechRec) {
+        // 语音识别模式：平滑滚动到目标段落
+        if (targetScrollY > scrollY + 0.5) {
+          scrollY += (targetScrollY - scrollY) * Math.min(1, 8 * dt);
+        } else {
+          scrollY = targetScrollY;
+        }
+      } else if (voiceFollow && analyser) {
         const volume = getVolume();
         // 灵敏度 1-10 映射到阈值 0.15-0.01
         const threshold = 0.15 - (sensitivity - 1) * (0.14 / 9);
@@ -790,6 +926,14 @@
     isPaused = !isPaused;
     pauseBtn.textContent = isPaused ? '继续' : '暂停';
     statusBar.textContent = isPaused ? '已暂停' : '滚动中';
+    // 语音识别暂停/恢复
+    if (voiceFollow && useSpeechRec && recognition) {
+      if (isPaused) {
+        try { recognition.stop(); } catch(e) {}
+      } else {
+        try { recognition.start(); } catch(e) {}
+      }
+    }
   });
 
   // 触摸拖动调节滚动位置
@@ -815,6 +959,9 @@
         isPaused = !isPaused;
         pauseBtn.textContent = isPaused ? '继续' : '暂停';
         statusBar.textContent = isPaused ? '已暂停' : '滚动中';
+      } else if (voiceFollow && useSpeechRec) {
+        // 手动拖动后，更新当前段落索引
+        updateCurrentParaFromScroll();
       }
     }
     isTouching = false;
